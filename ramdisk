@@ -226,8 +226,9 @@ create_ramdisk() {
 
         # Step 1: Create APFS container (no encryption at container level)
         # createContainer returns a new disk identifier for the container
+        # Use TERM=dumb to prevent ANSI color codes in output
         local container_output
-        container_output=$(diskutil apfs createContainer "$device" 2>&1) || {
+        container_output=$(TERM=dumb diskutil apfs createContainer "$device" 2>&1) || {
             print_error "Failed to create APFS container"
             # Attempt to clean up
             hdiutil detach "$device" 2>/dev/null || true
@@ -235,9 +236,8 @@ create_ramdisk() {
         }
 
         # Extract the new container disk identifier (e.g., "Created new APFS Container disk11")
-        # Strip ANSI color codes first for reliable parsing
         local container_device
-        container_device=$(echo "$container_output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep "Created new APFS Container" | grep -o 'disk[0-9]*' | head -1)
+        container_device=$(echo "$container_output" | grep "Created new APFS Container" | grep -o 'disk[0-9]*' | head -1)
 
         if [[ -z "$container_device" ]]; then
             print_error "Failed to get container device identifier"
@@ -290,8 +290,8 @@ list_ramdisks() {
     local found=0
     local hdiutil_output
 
-    # Get hdiutil info output
-    if ! hdiutil_output=$(hdiutil info 2>/dev/null); then
+    # Get hdiutil info output (TERM=dumb prevents ANSI color codes)
+    if ! hdiutil_output=$(TERM=dumb hdiutil info 2>/dev/null); then
         print_error "Failed to get disk image information"
         return 1
     fi
@@ -391,10 +391,10 @@ destroy_ramdisk() {
     print_info "Verifying device: $device"
 
     # Verify it's actually a RAM disk before destroying
-    # Strip ANSI color codes from hdiutil output for reliable matching
+    # Use TERM=dumb to prevent ANSI color codes in output
     # Use grep -w for word boundary matching to prevent false matches (e.g., disk1 vs disk10)
     local hdiutil_output
-    hdiutil_output=$(hdiutil info 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
+    hdiutil_output=$(TERM=dumb hdiutil info 2>/dev/null)
 
     # Check if this device is associated with a ram:// image
     local is_ramdisk=0

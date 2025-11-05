@@ -53,7 +53,7 @@ When `--encrypted` flag is provided:
 - No password recovery mechanism (intentional for security)
 
 ### RAM Disk Detection (list command)
-Parses `hdiutil info` output to find disks with `image-path: ram://...`. Must strip ANSI color codes from hdiutil output using `sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'` for reliable pattern matching.
+Parses `hdiutil info` output to find disks with `image-path: ram://...`. Uses `TERM=dumb` environment variable when calling hdiutil and diskutil to prevent ANSI color codes in output, avoiding the need for sed filtering.
 
 ### Verification (destroy command)
 Multi-layer safety checks before destroying:
