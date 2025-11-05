@@ -94,8 +94,33 @@ validate_size() {
         return 1
     fi
 
+    # Check available system RAM
+    local total_ram_bytes
+    total_ram_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+
+    if [[ -n "$total_ram_bytes" ]]; then
+        local total_ram_mb=$((total_ram_bytes / 1024 / 1024))
+        local available_ram_mb=$((total_ram_mb * 80 / 100))  # Use 80% as safe threshold
+
+        if (( size > total_ram_mb )); then
+            print_error "Requested size (${size}MB) exceeds total system RAM (${total_ram_mb}MB)"
+            return 1
+        fi
+
+        if (( size > available_ram_mb )); then
+            print_warning "Requested size (${size}MB) is more than 80% of total RAM (${total_ram_mb}MB)."
+            print_warning "This may cause system instability or performance issues."
+            read -p "Continue? (y/n) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                print_info "Operation cancelled"
+                exit 0
+            fi
+        fi
+    fi
+
     if (( size > 32768 )); then
-        print_warning "Creating very large RAM disk (${size}MB). This may affect system stability."
+        print_warning "Creating very large RAM disk (${size}MB)."
         read -p "Continue? (y/n) " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -116,9 +141,17 @@ validate_name() {
         return 1
     fi
 
-    # Check for invalid characters in volume name
-    if [[ "$name" =~ [:/] ]]; then
-        print_error "Volume name cannot contain ':' or '/' characters"
+    # Check length limit (reasonable for display and filesystem)
+    if [[ ${#name} -gt 64 ]]; then
+        print_error "Volume name is too long (max 64 characters)"
+        return 1
+    fi
+
+    # Use whitelist approach - only allow alphanumeric, spaces, hyphens, and underscores
+    # This prevents shell injection and special character issues
+    if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9\ _-]*$ ]]; then
+        print_error "Volume name can only contain letters, numbers, spaces, hyphens, and underscores"
+        print_error "Name must start with a letter or number"
         return 1
     fi
 
@@ -275,18 +308,37 @@ destroy_ramdisk() {
         fi
     fi
 
+    # Verify device exists
+    if [[ ! -e "$device" ]]; then
+        print_error "Device $device does not exist"
+        exit 1
+    fi
+
+    # Verify we can get disk info for this device
+    if ! diskutil info "$device" >/dev/null 2>&1; then
+        print_error "Unable to get information for device $device"
+        exit 1
+    fi
+
     print_info "Verifying device: $device"
 
     # Verify it's actually a RAM disk before destroying
     # Strip ANSI color codes from hdiutil output for reliable matching
-    if ! hdiutil info 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -q "$device"; then
-        print_warning "Device $device may not be a RAM disk"
-        read -p "Continue anyway? (y/n) " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Operation cancelled"
-            exit 0
-        fi
+    # Use grep -w for word boundary matching to prevent false matches (e.g., disk1 vs disk10)
+    local hdiutil_output
+    hdiutil_output=$(hdiutil info 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
+
+    # Check if this device is associated with a ram:// image
+    local is_ramdisk=0
+    if echo "$hdiutil_output" | grep -A 20 "image-path.*:.*ram://" | grep -qw "$device"; then
+        is_ramdisk=1
+    fi
+
+    if [[ $is_ramdisk -eq 0 ]]; then
+        print_error "Device $device is not a RAM disk"
+        print_error "Refusing to destroy non-RAM disk for safety"
+        print_info "Use diskutil or hdiutil directly if you're certain"
+        exit 1
     fi
 
     print_info "Unmounting and destroying RAM disk: $device"
@@ -294,9 +346,19 @@ destroy_ramdisk() {
     # Unmount and detach
     if ! hdiutil detach "$device" 2>/dev/null; then
         # Try force unmount if normal detach fails
-        print_warning "Normal detach failed, attempting force unmount..."
+        print_warning "Normal detach failed. The disk may be in use."
+        print_warning "Force unmounting may cause data loss if files are being written."
+        read -p "Attempt force unmount? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Operation cancelled"
+            print_info "Tip: Close any applications using the RAM disk and try again"
+            exit 1
+        fi
+
         if ! diskutil unmountDisk force "$device" 2>/dev/null; then
-            print_error "Failed to unmount/destroy RAM disk"
+            print_error "Failed to force unmount RAM disk"
+            print_info "The disk may be in use by system processes"
             exit 1
         fi
         # Try detach again

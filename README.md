@@ -28,6 +28,16 @@ Example:
 # Creates a 512MB RAM disk at /Volumes/TempCache
 ```
 
+**Volume name requirements:**
+- Must start with a letter or number
+- Can only contain letters, numbers, spaces, hyphens, and underscores
+- Maximum 64 characters
+- Cannot contain special characters like `$`, `(`, `)`, `/`, `:`, etc.
+
+**Size validation:**
+- The script checks available system RAM and prevents creation if size exceeds total RAM
+- Warns with confirmation prompt if size exceeds 80% of total RAM
+
 ### List all RAM disks
 
 ```bash
@@ -60,6 +70,13 @@ Examples:
 - RAM disks consume physical memory - creating a 1GB RAM disk uses 1GB of your system RAM
 - RAM disks are mounted at `/Volumes/<name>`
 - Use HFS+ file system by default
+
+## Safety features
+
+- **RAM disk verification**: The `destroy` command verifies the device is actually a RAM disk before destroying it, preventing accidental destruction of regular disks
+- **System RAM checks**: Prevents creating RAM disks larger than available system RAM
+- **Force unmount protection**: If a RAM disk is in use, the script requires confirmation before force unmounting
+- **Volume name validation**: Restricts volume names to safe characters to prevent injection attacks
 
 ## Common use cases
 
