@@ -1,0 +1,363 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# Color codes for output
+readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
+readonly YELLOW='\033[1;33m'
+readonly BLUE='\033[0;34m'
+readonly NC='\033[0m' # No Color
+
+# Script version
+readonly VERSION="1.0.0"
+
+# Function to print colored output
+print_error() {
+    echo -e "${RED}ERROR: $1${NC}" >&2
+}
+
+print_success() {
+    echo -e "${GREEN}SUCCESS: $1${NC}"
+}
+
+print_info() {
+    echo -e "${BLUE}INFO: $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}WARNING: $1${NC}"
+}
+
+# Function to display usage information
+show_usage() {
+    cat <<EOF
+ramdisk - RAM Disk Management Tool for macOS v${VERSION}
+
+USAGE:
+    ramdisk <command> [options]
+
+COMMANDS:
+    create <size_mb> <name>    Create a new RAM disk
+                               - size_mb: Size in megabytes (e.g., 100, 512, 1024)
+                               - name: Volume name (e.g., RAMDisk, TempCache)
+
+    list                       List all RAM disks
+
+    destroy <identifier>       Destroy/unmount a RAM disk
+                               - identifier: Volume name or device path (e.g., RAMDisk or /dev/disk3)
+
+    help                       Show this help message
+
+    version                    Show version information
+
+EXAMPLES:
+    # Create a 512MB RAM disk named "TempCache"
+    ramdisk create 512 TempCache
+
+    # List all RAM disks
+    ramdisk list
+
+    # Destroy RAM disk by name
+    ramdisk destroy TempCache
+
+    # Destroy RAM disk by device path
+    ramdisk destroy /dev/disk3
+
+NOTES:
+    - RAM disks are mounted under /Volumes/<name>
+    - All data on a RAM disk is lost when it's destroyed or the system reboots
+    - Requires sudo/root privileges for some operations
+
+EOF
+}
+
+# Function to check if running on macOS
+check_macos() {
+    if [[ "$(uname)" != "Darwin" ]]; then
+        print_error "This script only works on macOS"
+        exit 1
+    fi
+}
+
+# Function to validate size parameter
+validate_size() {
+    local size=$1
+
+    if ! [[ "$size" =~ ^[0-9]+$ ]]; then
+        print_error "Size must be a positive integer"
+        return 1
+    fi
+
+    if (( size < 1 )); then
+        print_error "Size must be at least 1 MB"
+        return 1
+    fi
+
+    if (( size > 32768 )); then
+        print_warning "Creating very large RAM disk (${size}MB). This may affect system stability."
+        read -p "Continue? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Operation cancelled"
+            exit 0
+        fi
+    fi
+
+    return 0
+}
+
+# Function to validate volume name
+validate_name() {
+    local name=$1
+
+    if [[ -z "$name" ]]; then
+        print_error "Volume name cannot be empty"
+        return 1
+    fi
+
+    # Check for invalid characters in volume name
+    if [[ "$name" =~ [:/] ]]; then
+        print_error "Volume name cannot contain ':' or '/' characters"
+        return 1
+    fi
+
+    # Check if volume already exists
+    if [[ -d "/Volumes/$name" ]]; then
+        print_error "Volume '/Volumes/$name' already exists"
+        return 1
+    fi
+
+    return 0
+}
+
+# Function to create a RAM disk
+create_ramdisk() {
+    local size_mb=$1
+    local volume_name=$2
+
+    # Validate inputs
+    validate_size "$size_mb" || exit 1
+    validate_name "$volume_name" || exit 1
+
+    print_info "Creating ${size_mb}MB RAM disk with name '${volume_name}'..."
+
+    # Create the RAM disk (size is in 512-byte sectors)
+    local sectors=$((2 * 1024 * size_mb))
+    local device
+
+    if ! device=$(hdiutil attach -nomount "ram://${sectors}" 2>&1); then
+        print_error "Failed to create RAM disk: $device"
+        exit 1
+    fi
+
+    # Extract device name (e.g., /dev/disk3)
+    device=$(echo "$device" | grep -o '/dev/disk[0-9]*' | head -1)
+
+    if [[ -z "$device" ]]; then
+        print_error "Failed to get device name"
+        exit 1
+    fi
+
+    print_info "RAM disk device created: $device"
+
+    # Format and mount the disk
+    print_info "Formatting and mounting..."
+
+    if ! diskutil eraseVolume HFS+ "$volume_name" "$device" >/dev/null 2>&1; then
+        print_error "Failed to format and mount RAM disk"
+        # Attempt to clean up
+        hdiutil detach "$device" 2>/dev/null || true
+        exit 1
+    fi
+
+    print_success "RAM disk created successfully"
+    echo ""
+    echo "  Device:      $device"
+    echo "  Volume Name: $volume_name"
+    echo "  Size:        ${size_mb}MB"
+    echo "  Mount Point: /Volumes/$volume_name"
+    echo ""
+    print_info "Access your RAM disk at: /Volumes/$volume_name"
+}
+
+# Function to list RAM disks
+list_ramdisks() {
+    print_info "Scanning for RAM disks..."
+    echo ""
+
+    local found=0
+    local hdiutil_output
+
+    # Get hdiutil info output
+    if ! hdiutil_output=$(hdiutil info 2>/dev/null); then
+        print_error "Failed to get disk image information"
+        return 1
+    fi
+
+    # Parse hdiutil output to find RAM disks (those with image-path: ram://...)
+    local current_image_path=""
+    local current_device=""
+    local current_mount=""
+
+    while IFS= read -r line; do
+        # Look for image-path lines
+        if [[ "$line" =~ ^image-path[[:space:]]*:[[:space:]]*ram:// ]]; then
+            current_image_path=$(echo "$line" | sed 's/^image-path[[:space:]]*:[[:space:]]*//')
+        fi
+
+        # Look for device lines (e.g., "/dev/disk10    /Volumes/TestRAM")
+        if [[ -n "$current_image_path" ]] && [[ "$line" =~ ^/dev/disk[0-9]+ ]]; then
+            current_device=$(echo "$line" | awk '{print $1}')
+            current_mount=$(echo "$line" | cut -d$'\t' -f2- | xargs)
+
+            # Get detailed disk info
+            local disk_info
+            if disk_info=$(diskutil info "$current_device" 2>/dev/null); then
+                local volume_name=$(echo "$disk_info" | grep "Volume Name:" | sed 's/.*Volume Name:[[:space:]]*//')
+                local size=$(echo "$disk_info" | grep "Disk Size:" | sed 's/.*Disk Size:[[:space:]]*//')
+                local mount_point=$(echo "$disk_info" | grep "Mount Point:" | sed 's/.*Mount Point:[[:space:]]*//')
+
+                found=1
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo "  Device:      $current_device"
+                [[ -n "$volume_name" ]] && echo "  Volume Name: $volume_name"
+                [[ -n "$mount_point" ]] && echo "  Mount Point: $mount_point"
+                [[ -n "$size" ]] && echo "  Size:        $size"
+                echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                echo ""
+            fi
+        fi
+
+        # Reset when we hit a separator
+        if [[ "$line" =~ ^=+$ ]]; then
+            current_image_path=""
+            current_device=""
+            current_mount=""
+        fi
+    done <<< "$hdiutil_output"
+
+    if [[ $found -eq 0 ]]; then
+        print_info "No RAM disks found"
+    fi
+}
+
+# Function to destroy a RAM disk
+destroy_ramdisk() {
+    local identifier=$1
+
+    if [[ -z "$identifier" ]]; then
+        print_error "No identifier provided"
+        echo "Usage: ramdisk destroy <volume_name_or_device>"
+        exit 1
+    fi
+
+    local device=""
+
+    # Check if identifier is a device path
+    if [[ "$identifier" =~ ^/dev/disk[0-9]+$ ]]; then
+        device="$identifier"
+    else
+        # Try to find device by volume name
+        local mount_point="/Volumes/$identifier"
+
+        if [[ ! -d "$mount_point" ]]; then
+            print_error "Volume '$identifier' not found at /Volumes/$identifier"
+            exit 1
+        fi
+
+        # Get device from mount point
+        device=$(diskutil info "$mount_point" 2>/dev/null | grep "Device Node:" | awk '{print $3}')
+
+        if [[ -z "$device" ]]; then
+            print_error "Could not determine device for volume '$identifier'"
+            exit 1
+        fi
+    fi
+
+    print_info "Verifying device: $device"
+
+    # Verify it's actually a RAM disk before destroying
+    # Strip ANSI color codes from hdiutil output for reliable matching
+    if ! hdiutil info 2>/dev/null | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep -q "$device"; then
+        print_warning "Device $device may not be a RAM disk"
+        read -p "Continue anyway? (y/n) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Operation cancelled"
+            exit 0
+        fi
+    fi
+
+    print_info "Unmounting and destroying RAM disk: $device"
+
+    # Unmount and detach
+    if ! hdiutil detach "$device" 2>/dev/null; then
+        # Try force unmount if normal detach fails
+        print_warning "Normal detach failed, attempting force unmount..."
+        if ! diskutil unmountDisk force "$device" 2>/dev/null; then
+            print_error "Failed to unmount/destroy RAM disk"
+            exit 1
+        fi
+        # Try detach again
+        hdiutil detach "$device" 2>/dev/null || true
+    fi
+
+    print_success "RAM disk destroyed successfully"
+}
+
+# Main script logic
+main() {
+    check_macos
+
+    # Handle no arguments
+    if [[ $# -eq 0 ]]; then
+        show_usage
+        exit 0
+    fi
+
+    local command=$1
+    shift
+
+    case "$command" in
+        create)
+            if [[ $# -ne 2 ]]; then
+                print_error "Invalid arguments for 'create' command"
+                echo "Usage: ramdisk create <size_mb> <name>"
+                exit 1
+            fi
+            create_ramdisk "$1" "$2"
+            ;;
+
+        list)
+            list_ramdisks
+            ;;
+
+        destroy)
+            if [[ $# -ne 1 ]]; then
+                print_error "Invalid arguments for 'destroy' command"
+                echo "Usage: ramdisk destroy <volume_name_or_device>"
+                exit 1
+            fi
+            destroy_ramdisk "$1"
+            ;;
+
+        help|--help|-h)
+            show_usage
+            ;;
+
+        version|--version|-v)
+            echo "ramdisk version ${VERSION}"
+            ;;
+
+        *)
+            print_error "Unknown command: $command"
+            echo ""
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+# Run main function
+main "$@"
