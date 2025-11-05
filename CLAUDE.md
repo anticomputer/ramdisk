@@ -42,6 +42,16 @@ Uses whitelist approach for security:
 ### Sector Calculation (create command)
 macOS requires size in 512-byte sectors: `sectors = 2 * 1024 * size_mb`
 
+### Encryption Support (create command - optional)
+When `--encrypted` flag is provided:
+- Uses APFS encryption instead of HFS+
+- Generates 24-character random password using `/dev/urandom` with character set: `A-Za-z0-9!@#$%^&*()_+=`
+- Creates APFS container first: `diskutil apfs createContainer`
+- Adds encrypted volume to container: `diskutil apfs addVolume`
+- Password passed via stdin with `-passphrase -` for security
+- Password displayed in yellow with clear warning to save it
+- No password recovery mechanism (intentional for security)
+
 ### RAM Disk Detection (list command)
 Parses `hdiutil info` output to find disks with `image-path: ram://...`. Must strip ANSI color codes from hdiutil output using `sed 's/\x1b\[[0-9;]*[a-zA-Z]//g'` for reliable pattern matching.
 
@@ -64,6 +74,14 @@ Multi-layer safety checks before destroying:
 **Device Verification**: Critical safety feature. Without strict RAM disk verification, a typo or bug could destroy a user's actual hard drive. The script uses word-boundary matching (`grep -w`) to avoid false positives and refuses to destroy non-RAM disks entirely.
 
 **Force Unmount Confirmation**: Prevents data loss. If files are being written when force unmount occurs, data corruption can happen. The confirmation prompt gives users a chance to close applications properly.
+
+**Optional Encryption**: Provides defense-in-depth for sensitive data. While RAM is generally considered secure, encryption protects against:
+- Cold boot attacks (extracting RAM contents after power-off)
+- Memory dumps by privileged users
+- Forensic analysis of system memory
+- Compliance requirements (PCI-DSS, HIPAA, etc.)
+
+Auto-generated passwords ensure strong entropy. Password is displayed once and never stored, requiring user to save it manually.
 
 ### Design Philosophy
 

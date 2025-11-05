@@ -38,9 +38,12 @@ USAGE:
     ramdisk <command> [options]
 
 COMMANDS:
-    create <size_mb> <name>    Create a new RAM disk
+    create <size_mb> <name> [--encrypted]
+                               Create a new RAM disk
                                - size_mb: Size in megabytes (e.g., 100, 512, 1024)
                                - name: Volume name (e.g., RAMDisk, TempCache)
+                               - --encrypted: Optional. Create encrypted APFS volume
+                                 Generates a strong random password displayed once
 
     list                       List all RAM disks
 
@@ -55,6 +58,9 @@ EXAMPLES:
     # Create a 512MB RAM disk named "TempCache"
     ramdisk create 512 TempCache
 
+    # Create an encrypted 512MB RAM disk
+    ramdisk create 512 SecureCache --encrypted
+
     # List all RAM disks
     ramdisk list
 
@@ -67,6 +73,8 @@ EXAMPLES:
 NOTES:
     - RAM disks are mounted under /Volumes/<name>
     - All data on a RAM disk is lost when it's destroyed or the system reboots
+    - Encrypted RAM disks use APFS encryption with auto-generated passwords
+    - Save the password shown during creation - it cannot be recovered
     - Requires sudo/root privileges for some operations
 
 EOF
@@ -132,6 +140,14 @@ validate_size() {
     return 0
 }
 
+# Function to generate a strong random password
+generate_password() {
+    # Generate a 24-character password with letters, numbers, and symbols
+    # Using /dev/urandom for cryptographic randomness
+    # Read enough random data first (96 bytes should be plenty), then filter to desired character set
+    head -c 96 < /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9!@#$%^&*()_+=' | head -c 24
+}
+
 # Function to validate volume name
 validate_name() {
     local name=$1
@@ -168,12 +184,18 @@ validate_name() {
 create_ramdisk() {
     local size_mb=$1
     local volume_name=$2
+    local encrypted=$3
 
     # Validate inputs
     validate_size "$size_mb" || exit 1
     validate_name "$volume_name" || exit 1
 
-    print_info "Creating ${size_mb}MB RAM disk with name '${volume_name}'..."
+    local encryption_msg=""
+    if [[ "$encrypted" == "true" ]]; then
+        encryption_msg=" (encrypted)"
+    fi
+
+    print_info "Creating ${size_mb}MB RAM disk${encryption_msg} with name '${volume_name}'..."
 
     # Create the RAM disk (size is in 512-byte sectors)
     local sectors=$((2 * 1024 * size_mb))
@@ -197,11 +219,50 @@ create_ramdisk() {
     # Format and mount the disk
     print_info "Formatting and mounting..."
 
-    if ! diskutil eraseVolume HFS+ "$volume_name" "$device" >/dev/null 2>&1; then
-        print_error "Failed to format and mount RAM disk"
-        # Attempt to clean up
-        hdiutil detach "$device" 2>/dev/null || true
-        exit 1
+    local password=""
+    if [[ "$encrypted" == "true" ]]; then
+        # Generate strong random password for encryption
+        password=$(generate_password)
+
+        # Step 1: Create APFS container (no encryption at container level)
+        # createContainer returns a new disk identifier for the container
+        local container_output
+        container_output=$(diskutil apfs createContainer "$device" 2>&1) || {
+            print_error "Failed to create APFS container"
+            # Attempt to clean up
+            hdiutil detach "$device" 2>/dev/null || true
+            exit 1
+        }
+
+        # Extract the new container disk identifier (e.g., "Created new APFS Container disk11")
+        # Strip ANSI color codes first for reliable parsing
+        local container_device
+        container_device=$(echo "$container_output" | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' | grep "Created new APFS Container" | grep -o 'disk[0-9]*' | head -1)
+
+        if [[ -z "$container_device" ]]; then
+            print_error "Failed to get container device identifier"
+            hdiutil detach "$device" 2>/dev/null || true
+            exit 1
+        fi
+
+        # Step 2: Add encrypted volume to the container
+        # Capture output instead of redirecting to /dev/null to avoid breaking stdin pipe
+        local add_volume_output
+        if ! add_volume_output=$(echo "$password" | diskutil apfs addVolume "$container_device" APFS "$volume_name" -stdinpassphrase 2>&1); then
+            print_error "Failed to add encrypted volume"
+            # Attempt to clean up
+            diskutil apfs deleteContainer "$container_device" 2>/dev/null || true
+            hdiutil detach "$device" 2>/dev/null || true
+            exit 1
+        fi
+    else
+        # Create standard HFS+ volume
+        if ! diskutil eraseVolume HFS+ "$volume_name" "$device" >/dev/null 2>&1; then
+            print_error "Failed to format and mount RAM disk"
+            # Attempt to clean up
+            hdiutil detach "$device" 2>/dev/null || true
+            exit 1
+        fi
     fi
 
     print_success "RAM disk created successfully"
@@ -210,6 +271,13 @@ create_ramdisk() {
     echo "  Volume Name: $volume_name"
     echo "  Size:        ${size_mb}MB"
     echo "  Mount Point: /Volumes/$volume_name"
+    if [[ "$encrypted" == "true" ]]; then
+        echo "  Encryption:  APFS Encrypted"
+        echo ""
+        print_warning "IMPORTANT: Save this password - it cannot be recovered!"
+        echo ""
+        echo -e "  ${YELLOW}Password: ${password}${NC}"
+    fi
     echo ""
     print_info "Access your RAM disk at: /Volumes/$volume_name"
 }
@@ -383,12 +451,24 @@ main() {
 
     case "$command" in
         create)
-            if [[ $# -ne 2 ]]; then
+            if [[ $# -lt 2 ]] || [[ $# -gt 3 ]]; then
                 print_error "Invalid arguments for 'create' command"
-                echo "Usage: ramdisk create <size_mb> <name>"
+                echo "Usage: ramdisk create <size_mb> <name> [--encrypted]"
                 exit 1
             fi
-            create_ramdisk "$1" "$2"
+
+            local encrypted="false"
+            if [[ $# -eq 3 ]]; then
+                if [[ "$3" == "--encrypted" ]]; then
+                    encrypted="true"
+                else
+                    print_error "Unknown option: $3"
+                    echo "Usage: ramdisk create <size_mb> <name> [--encrypted]"
+                    exit 1
+                fi
+            fi
+
+            create_ramdisk "$1" "$2" "$encrypted"
             ;;
 
         list)

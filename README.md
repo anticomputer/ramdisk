@@ -19,13 +19,16 @@ sudo mv ramdisk /usr/local/bin/
 ### Create a RAM disk
 
 ```bash
-./ramdisk create <size_mb> <name>
+./ramdisk create <size_mb> <name> [--encrypted]
 ```
 
-Example:
+Examples:
 ```bash
+# Standard RAM disk
 ./ramdisk create 512 TempCache
-# Creates a 512MB RAM disk at /Volumes/TempCache
+
+# Encrypted RAM disk
+./ramdisk create 512 SecureCache --encrypted
 ```
 
 **Volume name requirements:**
@@ -37,6 +40,12 @@ Example:
 **Size validation:**
 - The script checks available system RAM and prevents creation if size exceeds total RAM
 - Warns with confirmation prompt if size exceeds 80% of total RAM
+
+**Encryption (optional):**
+- Add `--encrypted` flag to create an encrypted APFS volume
+- A strong 24-character random password is automatically generated
+- **IMPORTANT**: Save the password immediately - it cannot be recovered
+- Use for sensitive data like credentials, API keys, or personal information
 
 ### List all RAM disks
 
@@ -71,19 +80,28 @@ Examples:
 - RAM disks are mounted at `/Volumes/<name>`
 - Use HFS+ file system by default
 
-## Safety features
+## Safety and security features
 
 - **RAM disk verification**: The `destroy` command verifies the device is actually a RAM disk before destroying it, preventing accidental destruction of regular disks
 - **System RAM checks**: Prevents creating RAM disks larger than available system RAM
 - **Force unmount protection**: If a RAM disk is in use, the script requires confirmation before force unmounting
 - **Volume name validation**: Restricts volume names to safe characters to prevent injection attacks
+- **Optional encryption**: APFS encryption with strong auto-generated passwords for sensitive data protection
 
 ## Common use cases
 
+**Standard RAM disks:**
 - Build output directories for faster compilation
-- Temporary caches that don't need to persist
+- Browser and application caches
 - Working with large temporary files
 - Reducing SSD wear for frequently written temporary data
+
+**Encrypted RAM disks:**
+- Processing sensitive credentials or API keys
+- Decrypting and working with confidential documents
+- Security research or malware analysis
+- Cryptocurrency operations
+- Any temporary storage of data that must remain confidential
 
 ## Requirements
 
