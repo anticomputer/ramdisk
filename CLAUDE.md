@@ -14,14 +14,22 @@ Test the script manually:
 # Create a test RAM disk
 ./ramdisk create 50 TestDisk
 
-# Verify it appears in the list
+# Create a RAM disk with indexing disabled
+./ramdisk create 50 TestDiskNoIndex --no-index
+
+# Verify they appear in the list
 ./ramdisk list
 
 # Verify it's accessible
 ls /Volumes/TestDisk
 
+# Verify indexing is disabled
+ls -la /Volumes/TestDiskNoIndex/.metadata_never_index
+mdutil -s /Volumes/TestDiskNoIndex
+
 # Clean up
 ./ramdisk destroy TestDisk
+./ramdisk destroy TestDiskNoIndex
 ```
 
 ## Key Implementation Details
@@ -51,6 +59,16 @@ When `--encrypted` flag is provided:
 - Password passed via stdin with `-passphrase -` for security
 - Password displayed in yellow with clear warning to save it
 - No password recovery mechanism (intentional for security)
+
+### Indexing Control (create command - optional)
+When `--no-index` flag is provided:
+- Creates `.metadata_never_index` file in volume root (prevents Spotlight from ever indexing)
+- Runs `mdutil -i off /Volumes/<name>` to disable Spotlight indexing via command
+- Adds Time Machine exclusion using `tmutil addexclusion /Volumes/<name>`
+- Some operations (mdutil, tmutil) may require sudo privileges
+- Improves performance by preventing background indexing processes
+- Useful for temporary workspaces, build directories, or performance-critical applications
+- Can be combined with `--encrypted` flag (flags work in any order)
 
 ### RAM Disk Detection (list command)
 Parses `hdiutil info` output to find disks with `image-path: ram://...`. Uses `TERM=dumb` environment variable when calling hdiutil and diskutil to prevent ANSI color codes in output, avoiding the need for sed filtering.
@@ -82,6 +100,14 @@ Multi-layer safety checks before destroying:
 - Compliance requirements (PCI-DSS, HIPAA, etc.)
 
 Auto-generated passwords ensure strong entropy. Password is displayed once and never stored, requiring user to save it manually.
+
+**Indexing Control**: The `--no-index` flag improves performance and privacy by preventing background indexing:
+- Performance: Spotlight indexing consumes RAM disk space and I/O bandwidth that could be used by applications
+- Privacy: Prevents sensitive file names and contents from being added to Spotlight's search index
+- Predictability: Eliminates background processes that could interfere with performance-critical workloads
+- Time Machine: Prevents unnecessary backup attempts of ephemeral RAM disk data
+
+Warnings are shown if sudo is required for certain operations (mdutil, tmutil), allowing graceful degradation.
 
 ### Design Philosophy
 

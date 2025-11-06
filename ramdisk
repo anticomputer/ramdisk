@@ -38,12 +38,14 @@ USAGE:
     ramdisk <command> [options]
 
 COMMANDS:
-    create <size_mb> <name> [--encrypted]
+    create <size_mb> <name> [--encrypted] [--no-index]
                                Create a new RAM disk
                                - size_mb: Size in megabytes (e.g., 100, 512, 1024)
                                - name: Volume name (e.g., RAMDisk, TempCache)
                                - --encrypted: Optional. Create encrypted APFS volume
                                  Generates a strong random password displayed once
+                               - --no-index: Optional. Disable Spotlight, Time Machine,
+                                 and other indexing services for better performance
 
     list                       List all RAM disks
 
@@ -61,6 +63,12 @@ EXAMPLES:
     # Create an encrypted 512MB RAM disk
     ramdisk create 512 SecureCache --encrypted
 
+    # Create a RAM disk with indexing disabled (better performance)
+    ramdisk create 512 FastCache --no-index
+
+    # Create an encrypted RAM disk with no indexing
+    ramdisk create 512 SecureFastCache --encrypted --no-index
+
     # List all RAM disks
     ramdisk list
 
@@ -75,6 +83,7 @@ NOTES:
     - All data on a RAM disk is lost when it's destroyed or the system reboots
     - Encrypted RAM disks use APFS encryption with auto-generated passwords
     - Save the password shown during creation - it cannot be recovered
+    - --no-index disables Spotlight, Time Machine, and other indexing (may require sudo)
     - Requires sudo/root privileges for some operations
 
 EOF
@@ -180,11 +189,41 @@ validate_name() {
     return 0
 }
 
+# Function to disable indexing services on a volume
+disable_indexing() {
+    local volume_name=$1
+    local mount_point="/Volumes/$volume_name"
+
+    print_info "Disabling indexing services..."
+
+    # Create .metadata_never_index file to prevent Spotlight indexing
+    if touch "$mount_point/.metadata_never_index" 2>/dev/null; then
+        print_info "✓ Spotlight indexing disabled (.metadata_never_index created)"
+    else
+        print_warning "Could not create .metadata_never_index file"
+    fi
+
+    # Disable Spotlight indexing using mdutil
+    if mdutil -i off "$mount_point" >/dev/null 2>&1; then
+        print_info "✓ Spotlight indexing disabled (mdutil)"
+    else
+        print_warning "Could not disable Spotlight via mdutil (may require sudo)"
+    fi
+
+    # Add Time Machine exclusion
+    if tmutil addexclusion "$mount_point" 2>/dev/null; then
+        print_info "✓ Time Machine backups disabled"
+    else
+        print_warning "Could not add Time Machine exclusion (may require sudo)"
+    fi
+}
+
 # Function to create a RAM disk
 create_ramdisk() {
     local size_mb=$1
     local volume_name=$2
     local encrypted=$3
+    local no_index=$4
 
     # Validate inputs
     validate_size "$size_mb" || exit 1
@@ -265,6 +304,12 @@ create_ramdisk() {
         fi
     fi
 
+    # Disable indexing if requested
+    if [[ "$no_index" == "true" ]]; then
+        echo ""
+        disable_indexing "$volume_name"
+    fi
+
     print_success "RAM disk created successfully"
     echo ""
     echo "  Device:      $device"
@@ -277,6 +322,9 @@ create_ramdisk() {
         print_warning "IMPORTANT: Save this password - it cannot be recovered!"
         echo ""
         echo -e "  ${YELLOW}Password: ${password}${NC}"
+    fi
+    if [[ "$no_index" == "true" ]]; then
+        echo "  Indexing:    Disabled (Spotlight, Time Machine)"
     fi
     echo ""
     print_info "Access your RAM disk at: /Volumes/$volume_name"
@@ -451,24 +499,38 @@ main() {
 
     case "$command" in
         create)
-            if [[ $# -lt 2 ]] || [[ $# -gt 3 ]]; then
+            if [[ $# -lt 2 ]] || [[ $# -gt 4 ]]; then
                 print_error "Invalid arguments for 'create' command"
-                echo "Usage: ramdisk create <size_mb> <name> [--encrypted]"
+                echo "Usage: ramdisk create <size_mb> <name> [--encrypted] [--no-index]"
                 exit 1
             fi
 
+            local size_mb="$1"
+            local volume_name="$2"
             local encrypted="false"
-            if [[ $# -eq 3 ]]; then
-                if [[ "$3" == "--encrypted" ]]; then
-                    encrypted="true"
-                else
-                    print_error "Unknown option: $3"
-                    echo "Usage: ramdisk create <size_mb> <name> [--encrypted]"
-                    exit 1
-                fi
-            fi
+            local no_index="false"
 
-            create_ramdisk "$1" "$2" "$encrypted"
+            # Process optional flags
+            shift 2  # Skip size and name arguments
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --encrypted)
+                        encrypted="true"
+                        shift
+                        ;;
+                    --no-index)
+                        no_index="true"
+                        shift
+                        ;;
+                    *)
+                        print_error "Unknown option: $1"
+                        echo "Usage: ramdisk create <size_mb> <name> [--encrypted] [--no-index]"
+                        exit 1
+                        ;;
+                esac
+            done
+
+            create_ramdisk "$size_mb" "$volume_name" "$encrypted" "$no_index"
             ;;
 
         list)
